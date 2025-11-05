@@ -5,6 +5,24 @@ from .general_utils import safe_normalize, flip_align_view
 from utils.sh_utils import eval_sh
 import kornia
 
+
+
+def eval_emitters(pc, rays_refl):
+    """
+    pc.emit_dirs[K,3], pc.emit_kappa[K,1], pc.emit_rgb[K,3], pc.emit_gain[K,1]
+    rays_refl: [H,W,3] or [N,3], returns same leading shape x 3
+    """
+    orig_shape = rays_refl.shape
+    d = rays_refl.reshape(-1, 3)                                    # [M,3]
+    mu = pc.emit_dirs                                               # [K,3], unit
+    cos = d @ mu.T                                                  # [M,K]
+    # SG kernel ~ exp(kappa*(cos-1))
+    sg = torch.exp((pc.emit_kappa.T) * (cos - 1.0))                 # [M,K]
+    rgbw = pc.emit_rgb * pc.emit_gain                               # [K,3]
+    L_emit = (sg[..., None] * rgbw[None, ...]).sum(dim=1)           # [M,3]
+    return L_emit.reshape(*orig_shape[:-1], 3)
+
+
 env_rayd1 = None
 FG_LUT = torch.from_numpy(np.fromfile("assets/bsdf_256_256.bin", dtype=np.float32).reshape(1, 256, 256, 2)).cuda()
 def init_envrayd1(H,W):
@@ -118,6 +136,10 @@ def get_specular_color_surfel(envmap: torch.Tensor, albedo, HWK, R, T, normal_ma
 
     # Direct light
     direct_light = envmap(rays_refl, roughness=roughness)
+    # === [ADD] emitter bank ===
+    L_emit = eval_emitters(pc, rays_refl) if pc is not None else 0.0
+    direct_light = direct_light + L_emit
+
     specular_weight = ((0.04 * (1 - refl_strength) + albedo * refl_strength) * fg[0][..., 0:1] + fg[0][..., 1:2])
 
     # visibility & (safe) indirect init

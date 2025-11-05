@@ -44,30 +44,23 @@ class EnvLight(torch.nn.Module):
 
 
     def load(self, path):
-        """
-        Load an .hdr or .exr environment light map file and convert it to cubemap.
-        """
-        # # load latlong env map from file
-        # image = imageio.imread(path)  # Load .hdr file
-        # if image.dtype != np.float32:
-        #     image = image.astype(np.float32) / 255.0  # Scale to [0,1] if not already in float
-        # 从文件中加载图像
-        hdr_image = imageio.imread(path)
-        
+        # 1) HDR(latlong) 그대로 로드 — imageio는 .hdr/.exr를 float32(선형)로 읽어줌
+        hdr_image = imageio.imread(path)  # float32, linear HDR
+
         if hdr_image.dtype != np.float32:
-            raise ValueError("HDR image should be in float32 format.")
+            hdr_image = hdr_image.astype(np.float32)
 
-        ldr_image = linear_to_srgb(hdr_image)
-        # 确保图像为浮点类型
-        image = torch.from_numpy(ldr_image).to(self.device) *  self.scale
-        image = torch.clamp(image, 0.001 , 1-0.001)
-        image = inverse_sigmoid(image)
+        # 2) 스케일만 적용 (노출/틴트는 따로 파라미터로 조정)
+        image = torch.from_numpy(hdr_image).to(self.device) * self.scale
 
-        # Convert from latlong to cubemap format
+        # 3) 음수는 잘라줌(수치 안정)
+        image = torch.clamp(image, min=0.0)
+
+        # 4) latlong -> cubemap (선형 HDR 그대로)
         cubemap = latlong_to_cubemap(image, [self.max_res, self.max_res], self.device)
 
-        # Assign the cubemap to the base parameter
-        self.base.data = cubemap 
+        self.base.data = cubemap
+
 
     def build_mips(self, cutoff=0.99):
         """
@@ -126,4 +119,4 @@ class EnvLight(torch.nn.Module):
 
         light = light.view(*prefix, -1)
         
-        return torch.sigmoid(light)
+        return torch.clamp(light, min=0.0)

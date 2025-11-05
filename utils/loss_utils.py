@@ -402,27 +402,31 @@ def calculate_loss(viewpoint_camera, pc, render_pkg, opt, iteration):
     # --- 여기까지 새로운 Loss 추가 ---
     # --- Metallic 맵 기반의 조건부 손실 ---
     # --- Metallic 맵 기반의 조건부 손실 ---
-    if opt.lambda_metallic_supervision > 0 and iteration > opt.metallic_loss_from_iter and viewpoint_camera.has_pseudo_material:
-        
+    if (
+    opt.lambda_metallic_supervision > 0
+    and iteration >= opt.metallic_loss_from_iter
+    and iteration < getattr(opt, "metallic_loss_until_iter", 10**9)  # 종료 이터 체크
+    and viewpoint_camera.has_pseudo_material
+    ):
         refl_strength_map = render_pkg.get("refl_strength_map")
         diffuse_map = render_pkg.get("diffuse_map")
-        roughness_map = render_pkg.get("roughness_map") # <<-- roughness_map 가져오기
-        
+        roughness_map = render_pkg.get("roughness_map")
+
         pseudo_metallic_slice = viewpoint_camera.pseudo_material_map[:, :, 1:2]
         pseudo_metallic_map = pseudo_metallic_slice.permute(2, 0, 1)
 
         if all(m is not None for m in [refl_strength_map, diffuse_map, roughness_map, pseudo_metallic_map]):
-            
-            # 1단계: refl_strength 직접 감독
+
+            # 1) refl_strength 직접 감독
             loss_metallic = l1_loss(refl_strength_map, pseudo_metallic_map)
             loss += opt.lambda_metallic_supervision * loss_metallic
             tb_dict["loss_metallic_supervision"] = loss_metallic.item()
 
-            # 2단계: 조건부 물리 법칙 강제
+            # 2) 조건부 규제들 (마스크)
             metallic_mask = (pseudo_metallic_map > opt.metallic_threshold).float().detach()
             non_metallic_mask = 1.0 - metallic_mask
 
-            # 비금속 영역에 Chroma Loss 적용
+            # 비금속 → 순도(chroma) 규제
             if opt.lambda_purity > 0:
                 purity_diffuse = calculate_purity(diffuse_map)
                 purity_total = calculate_purity(rendered_image)
@@ -431,20 +435,18 @@ def calculate_loss(viewpoint_camera, pc, render_pkg, opt, iteration):
                 loss += opt.lambda_purity * masked_chroma_loss
                 tb_dict["loss_purity_non_metallic"] = masked_chroma_loss.item()
 
-            # 금속 영역에 Diffuse 억제 손실 적용
+            # 금속 → diffuse 억제
             if opt.lambda_diffuse_metal > 0:
                 loss_diffuse_metal = (torch.abs(diffuse_map) * metallic_mask).sum() / (metallic_mask.sum() + 1e-8)
                 loss += opt.lambda_diffuse_metal * loss_diffuse_metal
                 tb_dict["loss_diffuse_metal"] = loss_diffuse_metal.item()
 
-            # <<-- 3단계: 조건부 거칠기(Roughness) 손실 추가 -->>
-            # 금속 영역은 부드럽게 (roughness -> 0)
+            # 금속/비금속 → roughness 규제
             if opt.lambda_roughness_metal > 0:
                 loss_roughness_metal = (torch.abs(roughness_map) * metallic_mask).sum() / (metallic_mask.sum() + 1e-8)
                 loss += opt.lambda_roughness_metal * loss_roughness_metal
                 tb_dict["loss_roughness_metal"] = loss_roughness_metal.item()
-            
-            # 비금속 영역은 거칠게 (roughness -> 1)
+
             if opt.lambda_roughness_non_metal > 0:
                 loss_roughness_non_metal = (torch.abs(1.0 - roughness_map) * non_metallic_mask).sum() / (non_metallic_mask.sum() + 1e-8)
                 loss += opt.lambda_roughness_non_metal * loss_roughness_non_metal

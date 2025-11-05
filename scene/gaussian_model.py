@@ -99,6 +99,14 @@ class GaussianModel:
         self.xyz_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
         self._uncertainty = torch.empty(0)
+        
+        
+        self._emit_dirs  = None
+        self._emit_kappa = None
+        self._emit_rgb   = None
+        self._emit_gain  = None
+        self._exp_gain   = None
+        self._tint       = None
 
         self._normal1 = torch.empty(0)
         self._normal2 = torch.empty(0)
@@ -147,6 +155,7 @@ class GaussianModel:
             self.xyz_gradient_accum,
             self.denom,
             self._uncertainty, 
+            (self._emit_dirs, self._emit_kappa, self._emit_rgb, self._emit_gain, self._exp_gain, self._tint),
             self.optimizer.state_dict(),
             self.spatial_lr_scale
             
@@ -174,8 +183,16 @@ class GaussianModel:
         xyz_gradient_accum, 
         denom,
         self._uncertainty,
+        emit_pack,
         opt_dict, 
         self.spatial_lr_scale) = model_args
+        
+        
+        # emitters/exposure 재장착 (옵션이 켜졌을 때만)
+        if emit_pack is not None:
+            (ed, ek, er, eg, egain, tint) = emit_pack
+            self._emit_dirs, self._emit_kappa, self._emit_rgb, self._emit_gain = ed, ek, er, eg
+            self._exp_gain, self._tint = egain, tint
         
         self._indirect_asg = nn.Parameter(torch.zeros(self._rotation.shape[0], 32, 5, device='cuda').requires_grad_(True))
         self.training_setup(training_args)
@@ -188,6 +205,33 @@ class GaussianModel:
         for param_group in self.optimizer.param_groups:
             if param_group["name"] == "opacity":
                 param_group['lr'] = lr
+                
+    @property            
+    def emit_dirs(self):
+        if self._emit_dirs is None: return None
+        return torch.nn.functional.normalize(self._emit_dirs, dim=-1)
+    
+    @property
+    def emit_kappa(self):
+        if self._emit_kappa is None: return None
+        return torch.nn.functional.softplus(self._emit_kappa) + 1e-3
+    @property
+    def emit_rgb(self):
+        if self._emit_rgb is None: return None
+        return torch.sigmoid(self._emit_rgb)
+    @property
+    def emit_gain(self):
+        if self._emit_gain is None: return None
+        return torch.nn.functional.softplus(self._emit_gain)
+    @property
+    def exp_gain(self):
+        if self._exp_gain is None: return torch.tensor(1.0, device="cuda")
+        return torch.exp(self._exp_gain).clamp(0.25, 4.0)
+    @property
+    def tint(self):
+        if self._tint is None: return torch.ones(3, device="cuda")
+        return torch.clamp(self._tint, 0.5, 1.5)
+    
 
     @property
     def get_uncertainty(self):
@@ -373,38 +417,70 @@ class GaussianModel:
             {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
             {'params': [self._features_dc], 'lr': training_args.features_lr, "name": "f_dc"},
             {'params': [self._features_rest], 'lr': training_args.features_lr / 20.0, "name": "f_rest"},
-            
+
             {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
             {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
             {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"},
-            {'params': self.env_map.parameters(), 'lr': training_args.envmap_cubemap_lr, "name": "env"},     
-            {'params': self.env_map_2.parameters(), 'lr': training_args.envmap_cubemap_lr, "name": "env2"}     
+            {'params': self.env_map.parameters(), 'lr': training_args.envmap_cubemap_lr, "name": "env"},
+            {'params': self.env_map_2.parameters(), 'lr': training_args.envmap_cubemap_lr, "name": "env2"},
         ]
 
         self._normal1.requires_grad_(requires_grad=False)
         self._normal2.requires_grad_(requires_grad=False)
         l.extend([
-            {'params': [self._refl_strength], 'lr': training_args.refl_strength_lr, "name": "refl_strength"},  
-            {'params': [self._ori_color], 'lr': training_args.ori_color_lr, "name": "ori_color"},  
-            {'params': [self._diffuse_color], 'lr': training_args.ori_color_lr, "name": "diffuse_color"},  
-            {'params': [self._roughness], 'lr': training_args.roughness_lr, "name": "roughness"},  
-            {'params': [self._metalness], 'lr': training_args.metalness_lr, "name": "metalness"}, 
-            {'params': [self._uncertainty], 'lr': training_args.uncertainty_lr, "name": "uncertainty"}, # <<-- 옵티마이저에 추가 
+            {'params': [self._refl_strength], 'lr': training_args.refl_strength_lr, "name": "refl_strength"},
+            {'params': [self._ori_color], 'lr': training_args.ori_color_lr, "name": "ori_color"},
+            {'params': [self._diffuse_color], 'lr': training_args.ori_color_lr, "name": "diffuse_color"},
+            {'params': [self._roughness], 'lr': training_args.roughness_lr, "name": "roughness"},
+            {'params': [self._metalness], 'lr': training_args.metalness_lr, "name": "metalness"},
+            {'params': [self._uncertainty], 'lr': training_args.uncertainty_lr, "name": "uncertainty"},
             {'params': [self._normal1], 'lr': training_args.normal_lr, "name": "normal1"},
             {'params': [self._normal2], 'lr': training_args.normal_lr, "name": "normal2"},
             {'params': [self._indirect_dc], 'lr': training_args.indirect_lr, "name": "ind_dc"},
             {'params': [self._indirect_rest], 'lr': training_args.indirect_lr / 20.0, "name": "ind_rest"},
             {'params': [self._indirect_asg], 'lr': training_args.asg_lr, "name": "ind_asg"},
         ])
-        # <<--- 바로 이 부분을 추가해야 합니다 ---<<
+
+        # ==== 여기부터 전역 Emitter/노출 파라미터 (있을 때만) 추가 ====
+        # 케이스 A) Emitter를 하나의 모듈(예: self.emitters: nn.Module)로 들고 있을 때
+        if getattr(training_args, "enable_emitters", False):
+            K = int(getattr(training_args, "num_emitters", 2))
+            if self._emit_dirs is None:
+                self._emit_dirs  = nn.Parameter(torch.nn.functional.normalize(torch.randn(K, 3, device="cuda"), dim=-1))
+                self._emit_kappa = nn.Parameter(torch.ones(K, 1, device="cuda") * 8.0)   # sharpness
+                self._emit_rgb   = nn.Parameter(torch.full((K, 3), 0.5, device="cuda"))  # RGB
+                self._emit_gain  = nn.Parameter(torch.zeros(K, 1, device="cuda"))        # ≥0 via softplus
+            l.append({'params': [self._emit_dirs, self._emit_kappa, self._emit_rgb, self._emit_gain],
+                      'lr': getattr(training_args, "emitter_lr", 5e-3),
+                      'name': "emitters"})
+
+        if getattr(training_args, "enable_exposure", False):
+            if self._exp_gain is None:
+                self._exp_gain = nn.Parameter(torch.tensor(0.0, device="cuda")) # log space
+            l.append({'params': [self._exp_gain],
+                      'lr': getattr(training_args, "exposure_lr", 1e-3),
+                      'name': "exposure"})
+        if getattr(training_args, "enable_wb", False):
+            if self._tint is None:
+                self._tint = nn.Parameter(torch.ones(3, device="cuda"))
+            l.append({'params': [self._tint],
+                      'lr': getattr(training_args, "wb_lr", 1e-3),
+                      'name': "white_balance"})
+        # ============================================================
+
         if projection_head is not None:
-            l.append({'params': projection_head.parameters(), 'lr': training_args.contrastive_lr, "name": "projection_head"})
+            l.append({'params': projection_head.parameters(),
+                    'lr': training_args.contrastive_lr,
+                    'name': "projection_head"})
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
-        self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init*self.spatial_lr_scale,
-                                                    lr_final=training_args.position_lr_final*self.spatial_lr_scale,
-                                                    lr_delay_mult=training_args.position_lr_delay_mult,
-                                                    max_steps=training_args.position_lr_max_steps)
+
+        self.xyz_scheduler_args = get_expon_lr_func(
+            lr_init=training_args.position_lr_init*self.spatial_lr_scale,
+            lr_final=training_args.position_lr_final*self.spatial_lr_scale,
+            lr_delay_mult=training_args.position_lr_delay_mult,
+            max_steps=training_args.position_lr_max_steps
+        )
 
     def update_learning_rate(self, iteration):
         for param_group in self.optimizer.param_groups:
@@ -774,7 +850,7 @@ class GaussianModel:
     def _prune_optimizer(self, mask):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
-            if group["name"] in ["mlp", "env", "env2", "projection_head"]: continue   # #
+            if group["name"] in ["mlp", "env", "env2", "projection_head", "emitters", "exposure", "white_balance"]: continue   # #
             stored_state = self.optimizer.state.get(group['params'][0], None)
 
             if stored_state is not None:
@@ -822,7 +898,7 @@ class GaussianModel:
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
-            if group["name"] in ["mlp", "env", "env2", "projection_head"] : continue   # #
+            if group["name"] in ["mlp", "env", "env2", "projection_head",  "emitters", "exposure", "white_balance"] : continue   # #
             assert len(group["params"]) == 1
             extension_tensor = tensors_dict[group["name"]]
             stored_state = self.optimizer.state.get(group['params'][0], None)
