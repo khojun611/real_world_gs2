@@ -16,6 +16,11 @@ import raytracing
 import torch.nn.functional as F # <<-- 이 줄을 추가하세요
 
 
+# scene/gaussian_model.py
+
+
+
+
 def get_env_direction1(H, W):
     gy, gx = torch.meshgrid(torch.linspace(0.0 + 1.0 / H, 1.0 - 1.0 / H, H, device='cuda'), 
                             torch.linspace(-1.0 + 1.0 / W, 1.0 - 1.0 / W, W, device='cuda'),
@@ -200,6 +205,45 @@ class GaussianModel:
         self.denom = denom
         
         # self.optimizer.load_state_dict(opt_dict)
+        
+    
+    def has_emitters(self):
+        return (getattr(self, "_emit_dirs", None) is not None
+                and self._emit_kappa is not None
+                and self._emit_rgb is not None
+                and self._emit_gain is not None)
+
+    def save_emitters(self, path):  # path: "/.../test_000100.ply" 같은 경로
+        if not self.has_emitters(): 
+            return
+        emit = {
+            "dirs":   self._emit_dirs.detach().cpu(),
+            "kappa":  self._emit_kappa.detach().cpu(),
+            "rgb":    self._emit_rgb.detach().cpu(),
+            "gain":   self._emit_gain.detach().cpu(),
+            # 선택: 게이트/노출/틴트 등도 함께
+            "_emit_gate": getattr(self, "_emit_gate", None).detach().cpu() if hasattr(self, "_emit_gate") else None,
+        }
+        torch.save(emit, path.replace(".ply", ".emit.pt"))
+
+    def load_emitters(self, path, device="cuda"):
+        f = path.replace(".ply", ".emit.pt")
+        if not os.path.exists(f):
+            # 없으면 안전하게 None 유지
+            self._emit_dirs  = None
+            self._emit_kappa = None
+            self._emit_rgb   = None
+            self._emit_gain  = None
+            return False
+        state = torch.load(f, map_location=device)
+        # nn.Parameter로 래핑
+        self._emit_dirs  = nn.Parameter(state["dirs"].to(device))
+        self._emit_kappa = nn.Parameter(state["kappa"].to(device))
+        self._emit_rgb   = nn.Parameter(state["rgb"].to(device))
+        self._emit_gain  = nn.Parameter(state["gain"].to(device))
+        if state.get("_emit_gate", None) is not None:
+            self._emit_gate = nn.Parameter(state["_emit_gate"].to(device))
+        return True
 
     def set_opacity_lr(self, lr):   
         for param_group in self.optimizer.param_groups:
@@ -559,7 +603,9 @@ class GaussianModel:
         if self.env_map_2 is not None:
             save_path = path.replace('.ply', '2.map')
             torch.save(self.env_map_2.state_dict(), save_path)
-                
+        
+        self.save_emitters(path)
+
 
     def reset_opacity0(self):
         opacities_new = self.inverse_opacity_activation(torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.01))
@@ -831,6 +877,8 @@ class GaussianModel:
                 torch.tensor(uncertainty_np, dtype=torch.float, device="cuda").requires_grad_(True)
             )
 
+        self.load_emitters(path, device="cuda")
+        
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:

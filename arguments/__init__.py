@@ -190,7 +190,7 @@ class OptimizationParams(ParamGroup):
         self.refl_msk_thr_vol = 0.02
 
         self.enlarge_scale = 1.5
-        self.train_on_all = False
+        self.train_on_all = True
         # Opacity and Densify Settings
         self.densification_interval = 100
         self.opacity_reset_interval = 3000
@@ -201,7 +201,7 @@ class OptimizationParams(ParamGroup):
         self.enable_emitters = True      # --enable_emitters
         self.num_emitters = 2             # --num_emitters
         self.emitter_lr = 5e-3            # --emitter_lr
-        self.emitters_from_iter = 10000    # --emitters_from_iter (optional)
+        self.emitters_from_iter = 3000    # --emitters_from_iter (optional)
 
         # Extra settings
         self.densify_grad_threshold = 0.0002
