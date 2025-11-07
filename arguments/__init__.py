@@ -161,7 +161,7 @@ class OptimizationParams(ParamGroup):
         self.uncertainty_metallic_threshold = 0.0
         self.metallic_threshold = 0.9
         self.metallic_loss_from_iter = 3000
-        self.metallic_loss_until_iter = 100000
+        self.metallic_loss_until_iter = 12000
         self.lambda_roughness_metal = 0.0      # <<-- 금속 영역의 roughness 손실 가중치
         self.lambda_roughness_non_metal = 0.0  # <<-- 비금속 영역의 roughness 손실 가중치
         # ----------------------------------------------------
@@ -190,7 +190,7 @@ class OptimizationParams(ParamGroup):
         self.refl_msk_thr_vol = 0.02
 
         self.enlarge_scale = 1.5
-        self.train_on_all = True
+        self.train_on_all = False
         # Opacity and Densify Settings
         self.densification_interval = 100
         self.opacity_reset_interval = 3000
@@ -200,8 +200,16 @@ class OptimizationParams(ParamGroup):
         
         self.enable_emitters = True      # --enable_emitters
         self.num_emitters = 2             # --num_emitters
-        self.emitter_lr = 5e-3            # --emitter_lr
+        self.emitter_lr = 5e-1            # --emitter_lr
         self.emitters_from_iter = 3000    # --emitters_from_iter (optional)
+        
+        
+        self.lambda_emit_sparsity   = 0.0   # emitter gain L1
+        self.lambda_emit_gate_cons  = 0.0   # gate consistency
+        self.lambda_emit_residual   = 0.0   # residual fit
+        
+        
+        
 
         # Extra settings
         self.densify_grad_threshold = 0.0002

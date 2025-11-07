@@ -134,11 +134,14 @@ def get_specular_color_surfel(envmap: torch.Tensor, albedo, HWK, R, T, normal_ma
     fg = dr.texture(FG_LUT, fg_uv.reshape(1, -1, 1, 2).contiguous(),
                     filter_mode="linear", boundary_mode="clamp").reshape(1, H, W, 2)
 
-    # Direct light
-    direct_light = envmap(rays_refl, roughness=roughness)
-    # === [ADD] emitter bank ===
-    L_emit = eval_emitters(pc, rays_refl) if pc is not None else 0.0
-    direct_light = direct_light + L_emit
+    # Direct light  
+    env_only = envmap(rays_refl, roughness=roughness)
+    L_emit = eval_emitters(pc, rays_refl) if (pc is not None and hasattr(pc, "emit_dirs")) else None
+
+    if L_emit is not None:
+        direct_light = env_only + L_emit
+    else:
+        direct_light = env_only
 
     specular_weight = ((0.04 * (1 - refl_strength) + albedo * refl_strength) * fg[0][..., 0:1] + fg[0][..., 1:2])
 
@@ -176,7 +179,10 @@ def get_specular_color_surfel(envmap: torch.Tensor, albedo, HWK, R, T, normal_ma
     extra_dict = {
         "visibility": visibility.permute(2, 0, 1),
         "direct_light": direct_light.permute(2, 0, 1),
+        "env_only": env_only.permute(2, 0, 1),
     }
+    if L_emit is not None:
+        extra_dict["emit_only"] = L_emit.permute(2, 0, 1)  # [3,H,W]
     if indirect_light is not None:
         # ensure a tensor is returned for indirect_color
         if indirect_color is None:

@@ -80,7 +80,10 @@ def render_set(model_path, views, gaussians, pipeline, background, save_ims, opt
         diffuse_path  = os.path.join(render_path, 'diffuse')
         specular_path = os.path.join(render_path, 'specular')
         refl_path     = os.path.join(render_path, 'reflection')  # jet 컬러맵
+        
         rough_path    = os.path.join(render_path, 'roughness')   # jet 컬러맵
+        emit_path = os.path.join(render_path, 'emit')
+        os.makedirs(emit_path, exist_ok=True)
         os.makedirs(color_path, exist_ok=True)
         os.makedirs(normal_path, exist_ok=True)
         os.makedirs(base_path, exist_ok=True)
@@ -149,6 +152,19 @@ def render_set(model_path, views, gaussians, pipeline, background, save_ims, opt
                 H, W = render_color.shape[-2:]
                 rough_jet = _apply_colormap(rough, H, W, cmap='jet', vmin=0.0, vmax=1.0)
                 torchvision.utils.save_image(rough_jet, os.path.join(rough_path, f'{stem}.png'))
+                
+                
+            # Emitter RGB 맵 (그대로)
+            if 'emit_map' in rendering:
+                emit = torch.clamp(rendering['emit_map'], 0.0, 1.0)  # [3,H,W]
+                torchvision.utils.save_image(emit, os.path.join(emit_path, f'{stem}.png'))
+
+                # 혹시 강도만 보고 싶으면:
+                emit_int = emit.mean(0, keepdim=True)  # [1,H,W]
+                H, W = render_color.shape[-2:]
+                emit_jet = _apply_colormap(emit_int, H, W, cmap='jet', vmin=0.0, vmax=emit_int.max().item() or 1.0)
+                torchvision.utils.save_image(emit_jet, os.path.join(emit_path, f'{stem}_jet.png'))
+
 
     # summary
     ssim_v = float(np.mean(ssims)) if ssims else 0.0

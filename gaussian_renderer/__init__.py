@@ -404,7 +404,8 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
             'surf_depth': surf_depth,
             'surf_normal': surf_normal
     }
-    
+    if "emit_only" in extra_dict:
+        results["emit_map"] = extra_dict["emit_only"] * (refl_strength > 0.8).float()
     if opt.indirect:
         results.update(extra_dict)
 

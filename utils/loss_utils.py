@@ -189,7 +189,10 @@ def calculate_loss(viewpoint_camera, pc, render_pkg, opt, iteration):
     
     # print(render_pkg.keys())
     #print(f"[INFO] In calculate_loss for '{viewpoint_camera.image_name}': has_material_map={viewpoint_camera.has_pseudo_material}")
-
+    extra_dict = render_pkg.get("extra_dict", {}) or {}
+    direct_light = extra_dict.get("direct_light", None)            # (3,H,W) 예상
+    env_only     = extra_dict.get("env_only", None)                # (3,H,W) 예상
+    render_noemit = render_pkg.get("render_noemit", None)          # (3,H,W) 예상
 
     
     # 1. 렌더링된 가우시안이 없는 경우 예외 처리
@@ -451,7 +454,33 @@ def calculate_loss(viewpoint_camera, pc, render_pkg, opt, iteration):
                 loss_roughness_non_metal = (torch.abs(1.0 - roughness_map) * non_metallic_mask).sum() / (non_metallic_mask.sum() + 1e-8)
                 loss += opt.lambda_roughness_non_metal * loss_roughness_non_metal
                 tb_dict["loss_roughness_non_metallic"] = loss_roughness_non_metal.item()
-    
+                
+    # --- emitter sparsity
+    if opt.lambda_emit_sparsity > 0 and hasattr(pc, "emit_gain"):
+        l_emit_sparse = pc.emit_gain.mean()
+        loss += opt.lambda_emit_sparsity * l_emit_sparse
+        tb_dict["loss_emit_sparsity"] = l_emit_sparse.item()
+
+    # --- emitter gate consistency (metal/highlight only)
+    if opt.lambda_emit_gate_cons > 0 and "direct_light" in extra_dict:
+        mask_metal = (pseudo_metallic_map > opt.metallic_threshold).float() if viewpoint_camera.has_pseudo_material else 0.0
+        lum = (0.2126*rendered_image[0:1] + 0.7152*rendered_image[1:2] + 0.0722*rendered_image[2:3])
+        mask_hl = (lum > lum.mean() + 1.0*lum.std()).float()
+        gate = torch.clamp(mask_metal + mask_hl, 0, 1)
+        L_emit = (extra_dict["direct_light"] - extra_dict.get("env_only", 0.0)).clamp(min=0)
+        l_gate = ((1 - gate) * L_emit).mean()
+        loss += opt.lambda_emit_gate_cons * l_gate
+        tb_dict["loss_emit_gate_cons"] = l_gate.item()
+
+    # --- residual fit
+    if opt.lambda_emit_residual > 0 and tb_dict.get("render_noemit") is not None and "direct_light" in extra_dict:
+        I_noemit = tb_dict["render_noemit"]
+        pos_res  = torch.relu(gt_image - I_noemit)
+        L_emit   = (extra_dict["direct_light"] - extra_dict.get("env_only", 0.0)).clamp(min=0)
+        l_res = torch.abs(pos_res - L_emit).mean()
+        loss += opt.lambda_emit_residual * l_res
+        tb_dict["loss_emit_residual"] = l_res.item()
+        
     
     return loss, tb_dict
 
