@@ -329,28 +329,6 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
     # 방금 추가한 uncertainty 채널을 여기서 분리합니다.
     rendered_uncertainty = rendered_features[8:9]
     
-    """
-    # --- ▼▼▼ 여기에 디버깅 코드를 추가하세요 ▼▼▼ ---
-    print(f"\n--- [DEBUG] In render_surfel for view: {viewpoint_camera.image_name} ---")
-    
-    # 1. 원본 Uncertainty 파라미터 상태 확인 (래스터라이저 입력 전)
-    #    이 값이 초기값(예: 1e-4)으로만 나온다면, load_ply에 문제가 있는 것입니다.
-    source_uncertainty = pc.get_uncertainty
-    if source_uncertainty.numel() > 0:
-        print(f"[Source]   pc.get_uncertainty stats >> Shape: {source_uncertainty.shape}, Min: {source_uncertainty.min().item():.6f}, Max: {source_uncertainty.max().item():.6f}, Mean: {source_uncertainty.mean().item():.6f}")
-    else:
-        print("[Source]   pc.get_uncertainty is EMPTY!")
-
-    # 2. 렌더링된 Uncertainty 맵 상태 확인 (래스터라이저 출력 후)
-    #    Source는 정상인데 이 값이 이상하다면, 래스터라이저 전달/해석 과정의 문제입니다.
-    if rendered_uncertainty.numel() > 0:
-        print(f"[Rendered] rendered_uncertainty stats >> Shape: {rendered_uncertainty.shape}, Min: {rendered_uncertainty.min().item():.6f}, Max: {rendered_uncertainty.max().item():.6f}, Mean: {rendered_uncertainty.mean().item():.6f}")
-    else:
-        print("[Rendered] rendered_uncertainty is EMPTY!")
-        
-    print("--------------------------------------------------------------------")
-    """
-
     # 2DGS normal and regularizations
     regularizations = compute_2dgs_normal_and_regularizations(allmap, viewpoint_camera, pipe)
     render_alpha = regularizations['render_alpha']
@@ -365,9 +343,9 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
     normal_map = normal_map / render_alpha.permute(1,2,0).clamp_min(1e-6)
     
     if opt.indirect:
-        specular, extra_dict = get_specular_color_surfel(pc.get_envmap, albedo.permute(1,2,0), viewpoint_camera.HWK, viewpoint_camera.R, viewpoint_camera.T, normal_map, render_alpha.permute(1,2,0), refl_strength=refl_strength.permute(1,2,0), roughness=roughness.permute(1,2,0), pc=pc, surf_depth=surf_depth, indirect_light=indirect_light.permute(1,2,0))
+        specular, extra_dict = get_specular_color_surfel(pc.get_envmap, albedo.permute(1,2,0), viewpoint_camera.HWK, viewpoint_camera.R, viewpoint_camera.T, normal_map, render_alpha.permute(1,2,0), refl_strength=refl_strength.permute(1,2,0), roughness=roughness.permute(1,2,0), pc=pc, surf_depth=surf_depth, indirect_light=indirect_light.permute(1,2,0),opt=opt)
     else:
-        specular, extra_dict = get_specular_color_surfel(pc.get_envmap, albedo.permute(1,2,0), viewpoint_camera.HWK, viewpoint_camera.R, viewpoint_camera.T, normal_map, render_alpha.permute(1,2,0), refl_strength=refl_strength.permute(1,2,0), roughness=roughness.permute(1,2,0), pc=pc, surf_depth=surf_depth)
+        specular, extra_dict = get_specular_color_surfel(pc.get_envmap, albedo.permute(1,2,0), viewpoint_camera.HWK, viewpoint_camera.R, viewpoint_camera.T, normal_map, render_alpha.permute(1,2,0), refl_strength=refl_strength.permute(1,2,0), roughness=roughness.permute(1,2,0), pc=pc, surf_depth=surf_depth,opt=opt)
 
     # Integrate the final image
     final_image = (1-refl_strength) * base_color + specular 
@@ -404,13 +382,18 @@ def render_surfel(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
             'surf_depth': surf_depth,
             'surf_normal': surf_normal
     }
+    # 1. "emit_map"에서 마스크를 제거하고 "emit_only"로 키를 통일합니다.
     if "emit_only" in extra_dict:
-        results["emit_map"] = extra_dict["emit_only"] * (refl_strength > 0.8).float()
+        results["emit_only"] = extra_dict["emit_only"] * (refl_strength > 0.95).float()
+    
+    # 2. "env_only"도 별도로 추가합니다.
+    if "env_only" in extra_dict:
+        results["env_only"] = extra_dict["env_only"]
+
+    # 3. opt.indirect는 나머지 맵들(visibility, indirect_light 등)에만 적용합니다.
     if opt.indirect:
-        results.update(extra_dict)
-
-
-
+        results.update(extra_dict) # 이미 추가된 키는 덮어써도 동일합니다.
+    
     return results
 
 

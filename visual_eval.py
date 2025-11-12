@@ -155,8 +155,8 @@ def render_set(model_path, views, gaussians, pipeline, background, save_ims, opt
                 
                 
             # Emitter RGB 맵 (그대로)
-            if 'emit_map' in rendering:
-                emit = torch.clamp(rendering['emit_map'], 0.0, 1.0)  # [3,H,W]
+            if 'emit_only' in rendering:
+                emit = torch.clamp(rendering['emit_only'], 0.0, 1.0)  # [3,H,W]
                 torchvision.utils.save_image(emit, os.path.join(emit_path, f'{stem}.png'))
 
                 # 혹시 강도만 보고 싶으면:

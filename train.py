@@ -160,6 +160,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         # Set render
         render = select_render_method(iteration, opt, initial_stage)
+        opt.iteration = iteration
         render_pkg = render(viewpoint_cam, gaussians, pipe, background, srgb=opt.srgb, opt=opt)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
@@ -354,6 +355,20 @@ def save_training_vis(viewpoint_cam, gaussians, background, render_fn, pipe, opt
                     render_pkg["direct_light"],
                     render_pkg["indirect_light"],
                 ]
+            if "env_only" in render_pkg:
+                print("a")
+                # Numpy로 변환 후 linear_to_srgb 적용
+                env_only_np = render_pkg["env_only"].permute(1, 2, 0).cpu().numpy()
+                vis_env_only = torch.from_numpy(linear_to_srgb(env_only_np)).permute(2, 0, 1).cuda()
+                visualization_list.append(vis_env_only)
+
+            # 2. emit_only 시각화 (Emitter만 사용한 조명)
+            if "emit_only" in render_pkg:
+                print("b")
+                # Numpy로 변환 후 linear_to_srgb 적용
+                emit_only_np = render_pkg["emit_only"].permute(1, 2, 0).cpu().numpy()
+                vis_emit_only = torch.from_numpy(linear_to_srgb(emit_only_np)).permute(2, 0, 1).cuda()
+                visualization_list.append(vis_emit_only)
         else:
             visualization_list = [
                 viewpoint_cam.original_image.cuda(),  
@@ -371,6 +386,8 @@ def save_training_vis(viewpoint_cam, gaussians, background, render_fn, pipe, opt
                 error_map, 
             ]
             # <<-- 핵심 수정: 안전한 키 접근 방식으로 변경 -->>
+            if iteration % 1000 == 0: # 너무 자주 찍히지 않게
+                print(f"[Iter {iteration}] render_pkg keys: {render_pkg.keys()}")
             vis_chroma = tb_dict.get("vis_chroma_loss_map")
             if vis_chroma is not None:
                 print("chroma loss2")
@@ -382,6 +399,24 @@ def save_training_vis(viewpoint_cam, gaussians, background, render_fn, pipe, opt
                 print("high freq2")
                 vis_hf_mask = apply_colormap(vis_hf_mask, H, W, cmap='gray')
                 visualization_list.append(vis_hf_mask)
+                
+            # ★★★ 여기에 아래 코드를 추가하세요 ★★★
+            
+            # 1. env_only 시각화 (Env Map만 사용한 조명)
+            if "env_only" in render_pkg:
+                # PyTorch 텐서를 (sRGB 함수가 예상하는) [H, W, C] 형태로 permute
+                env_only_hwc = render_pkg["env_only"].permute(1, 2, 0)
+                # PyTorch 텐서를 sRGB 함수에 바로 전달
+                vis_env_only = linear_to_srgb(env_only_hwc).permute(2, 0, 1) # [C, H, W]로 복원
+                visualization_list.append(vis_env_only)
+
+            # 2. emit_only 시각화
+            if "emit_only" in render_pkg:
+                # PyTorch 텐서를 (sRGB 함수가 예상하는) [H, W, C] 형태로 permute
+                emit_only_hwc = render_pkg["emit_only"].permute(1, 2, 0)
+                # PyTorch 텐서를 sRGB 함수에 바로 전달
+                vis_emit_only = linear_to_srgb(emit_only_hwc).permute(2, 0, 1) # [C, H, W]로 복원
+                visualization_list.append(vis_emit_only)
 
         grid = make_grid(visualization_list, nrow=5)
         scale = grid.shape[-2] / 800

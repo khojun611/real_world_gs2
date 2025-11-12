@@ -121,7 +121,7 @@ def reflection(w_o, normal):
 
 def get_specular_color_surfel(envmap: torch.Tensor, albedo, HWK, R, T, normal_map,
                               render_alpha, scaling_modifier = 1.0, refl_strength = None,
-                              roughness = None, pc=None, surf_depth=None, indirect_light=None):  # RT W2C
+                              roughness = None, pc=None, surf_depth=None, indirect_light=None, opt = None):  # RT W2C
     global FG_LUT
     H, W, K = HWK
     rays_cam, rays_o = sample_camera_rays(HWK, R, T)
@@ -136,10 +136,22 @@ def get_specular_color_surfel(envmap: torch.Tensor, albedo, HWK, R, T, normal_ma
 
     # Direct light  
     env_only = envmap(rays_refl, roughness=roughness)
-    L_emit = eval_emitters(pc, rays_refl) if (pc is not None and hasattr(pc, "emit_dirs")) else None
+
+    # 1. Emitter가 물리적으로 존재하는지 확인
+    emitters_exist = (pc is not None and hasattr(pc, "emit_dirs"))
+
+    # 2. 현재 iteration을 가져오고, 시작 iteration과 비교
+    current_iter = getattr(opt, "iteration", 99999)
+    start_iter = opt.emitters_from_iter # 3000
+    
+    L_emit = None
+    if emitters_exist and current_iter >= start_iter:
+        # 3. Emitter가 존재하고, 시작 iter가 지났을 때만 계산
+        L_emit = eval_emitters(pc, rays_refl)
 
     if L_emit is not None:
         direct_light = env_only + L_emit
+        
     else:
         direct_light = env_only
 
